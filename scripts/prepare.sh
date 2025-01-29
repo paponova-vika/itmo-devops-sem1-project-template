@@ -5,54 +5,61 @@
 
 set -e
 
-echo "Installing necessary packages..."
-sudo apt-get update
-sudo apt-get install -y golang-go postgresql postgresql-contrib unzip curl
+echo "Checking if PostgreSQL is running..."
+if pg_isready -q -h localhost -p 5432; then
+    echo "PostgreSQL is already running. Skipping startup."
+else
+    echo "PostgreSQL is not running. Installing and starting..."
+    sudo apt-get update
+    sudo apt-get install -y golang-go postgresql postgresql-contrib unzip curl
+    sudo service postgresql start
+fi
 
-echo "Starting PostgreSQL service..."
-sudo service postgresql start
+echo "Checking if database 'project-sem-1' exists..."
+DB_EXISTS=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='project-sem-1'")
 
-echo "Configuring PostgreSQL for external access..."
-
-# Update postgresql.conf to listen on all interfaces
-PG_CONF="/etc/postgresql/$(ls /etc/postgresql)/main/postgresql.conf"
-sudo sed -i "s/^#listen_addresses = 'localhost'/listen_addresses = '*'/g" $PG_CONF
-
-# Update pg_hba.conf to allow connections from any IP (or restrict to your network)
-PG_HBA="/etc/postgresql/$(ls /etc/postgresql)/main/pg_hba.conf"
-echo "host    all             all             0.0.0.0/0               md5" | sudo tee -a $PG_HBA
-echo "host    all             all             ::/0                    md5" | sudo tee -a $PG_HBA
-
-# Restart PostgreSQL to apply changes
-sudo service postgresql restart
-
-echo "Setting up database, user, and table..."
-
-# Create database, user, table, and grant permissions
-sudo -u postgres psql <<EOF
-CREATE DATABASE "project-sem-1";
-CREATE USER validator WITH PASSWORD 'val1dat0r";
-GRANT ALL PRIVILEGES ON DATABASE "project-sem-1" TO validator;
-
-\c "project-sem-1"
-
--- Grant privileges on schema public
-ALTER SCHEMA public OWNER TO validator;
-GRANT ALL ON SCHEMA public TO validator;
-
--- Create the table
-CREATE TABLE IF NOT EXISTS prices (
-    id SERIAL PRIMARY KEY,
-    product_name TEXT NOT NULL,
-    category TEXT NOT NULL,
-    price NUMERIC NOT NULL,
-    creation_date DATE NOT NULL
-);
-
--- Grant privileges on the table and sequences
-GRANT ALL PRIVILEGES ON TABLE prices TO validator;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO validator;
+if [ "$DB_EXISTS" == "1" ]; then
+    echo "Database 'project-sem-1' already exists. Skipping creation."
+else
+    echo "Creating database 'project-sem-1'..."
+    sudo -u postgres psql <<EOF
+    CREATE DATABASE "project-sem-1";
+    CREATE USER validator WITH PASSWORD 'val1dat0r';
+    GRANT ALL PRIVILEGES ON DATABASE "project-sem-1" TO validator;
 EOF
+fi
+
+echo "Checking if table 'prices' exists..."
+TABLE_EXISTS=$(sudo -u postgres psql -d "project-sem-1" -tAc "SELECT to_regclass('public.prices')")
+
+if [ "$TABLE_EXISTS" == "public.prices" ]; then
+    echo "Table 'prices' already exists. Skipping creation."
+else
+    echo "Creating table 'prices'..."
+    sudo -u postgres psql -d "project-sem-1" <<EOF
+    ALTER SCHEMA public OWNER TO validator;
+    GRANT ALL ON SCHEMA public TO validator;
+
+    CREATE TABLE prices (
+        id SERIAL PRIMARY KEY,
+        product_name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        price NUMERIC NOT NULL,
+        creation_date DATE NOT NULL
+    );
+
+    GRANT ALL PRIVILEGES ON TABLE prices TO validator;
+    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO validator;
+EOF
+fi
+
+echo "Checking if application is already running..."
+APP_RUNNING=$(pgrep -f "./app")
+
+if [ -n "$APP_RUNNING" ]; then
+    echo "Application is already running (PID: $APP_RUNNING). Skipping startup."
+    exit 0
+fi
 
 echo "Installing Go dependencies..."
 if [ -f go.mod ]; then
