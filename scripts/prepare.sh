@@ -5,6 +5,12 @@
 
 set -e
 
+PGHOST="localhost"
+PGPORT=5432
+PGUSER="validator"
+PGPASSWORD="val1dat0r"
+DBNAME="project-sem-1"
+
 echo "Checking if PostgreSQL is running..."
 if pg_isready -q -h localhost -p 5432; then
     echo "PostgreSQL is already running. Skipping startup."
@@ -16,13 +22,13 @@ else
 fi
 
 echo "Checking if database 'project-sem-1' exists..."
-DB_EXISTS=$(sudo -u postgres psql -h localhost -p 5432 -tAc "SELECT 1 FROM pg_database WHERE datname='project-sem-1'")
+DB_EXISTS=$(psql -U "$PGUSER" -h "$PGHOST" -p "$PGPORT" -d "$DBNAME" -tAc "SELECT 1 FROM pg_database WHERE datname='project-sem-1'")
 
 if [ "$DB_EXISTS" == "1" ]; then
     echo "Database 'project-sem-1' already exists. Skipping creation."
 else
     echo "Creating database 'project-sem-1'..."
-    sudo -u postgres psql -h localhost -p 5432 <<EOF
+    psql -U "$PGUSER" -h "$PGHOST" -p "$PGPORT" -d "$DBNAME" <<EOF
     CREATE DATABASE "project-sem-1";
     CREATE USER validator WITH PASSWORD 'val1dat0r';
     GRANT ALL PRIVILEGES ON DATABASE "project-sem-1" TO validator;
@@ -30,13 +36,13 @@ EOF
 fi
 
 echo "Checking if table 'prices' exists..."
-TABLE_EXISTS=$(sudo -u postgres psql -h localhost -p 5432 -d "project-sem-1" -tAc "SELECT to_regclass('public.prices')")
+TABLE_EXISTS=$(psql -U "$PGUSER" -h "$PGHOST" -p "$PGPORT" -d "$DBNAME" -d "project-sem-1" -tAc "SELECT to_regclass('public.prices')")
 
 if [ "$TABLE_EXISTS" == "public.prices" ]; then
     echo "Table 'prices' already exists. Skipping creation."
 else
     echo "Creating table 'prices'..."
-    sudo -u postgres psql -d "project-sem-1" <<EOF
+    psql -U "$PGUSER" -h "$PGHOST" -p "$PGPORT" -d "$DBNAME" -d "$DBNAME" <<EOF
     ALTER SCHEMA public OWNER TO validator;
     GRANT ALL ON SCHEMA public TO validator;
 
