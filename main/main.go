@@ -19,10 +19,10 @@ import (
 
 const (
 	dbHost     = "localhost"
-	dbPort     = 15432
-	dbUser     = "hank"
-	dbPassword = "hank"
-	dbName     = "demo"
+	dbPort     = 5432
+	dbUser     = "validator"
+	dbPassword = "val1dat0r"
+	dbName     = "project-sem-1"
 )
 
 var db *sql.DB
