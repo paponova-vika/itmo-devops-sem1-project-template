@@ -12,7 +12,7 @@ PGPASSWORD="val1dat0r"
 DBNAME="project-sem-1"
 
 echo "Checking if PostgreSQL is running..."
-if pg_isready -q -h localhost -p 5432; then
+if pg_isready -q -h "$PGHOST" -p "$PGPORT" -U "$PGUSER"; then
     echo "PostgreSQL is already running. Skipping startup."
 else
     echo "PostgreSQL is not running. Installing and starting..."
