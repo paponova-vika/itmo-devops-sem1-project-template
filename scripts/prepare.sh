@@ -36,7 +36,7 @@ EOF
 fi
 
 echo "Checking if table 'prices' exists..."
-TABLE_EXISTS=$(psql -U "$PGUSER" -h "$PGHOST" -p "$PGPORT" -d "$DBNAME" -d "project-sem-1" -tAc "SELECT to_regclass('public.prices')")
+TABLE_EXISTS=$(PGPASSWORD="$PGPASSWORD" psql -U "$PGUSER" -h "$PGHOST" -p "$PGPORT" -d "$DBNAME" -d "project-sem-1" -tAc "SELECT to_regclass('public.prices')")
 
 if [ "$TABLE_EXISTS" == "public.prices" ]; then
     echo "Table 'prices' already exists. Skipping creation."
