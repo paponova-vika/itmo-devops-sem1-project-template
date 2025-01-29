@@ -36,7 +36,7 @@ EOF
 fi
 
 echo "Checking if table 'prices' exists..."
-TABLE_EXISTS=$(PGPASSWORD="$PGPASSWORD" psql -U "$PGUSER" -h "$PGHOST" -p "$PGPORT" -d "$DBNAME" -d "project-sem-1" -tAc "SELECT to_regclass('public.prices')")
+TABLE_EXISTS=$(PGPASSWORD="$PGPASSWORD" psql -U "$PGUSER" -h "$PGHOST" -p "$PGPORT" -d "$DBNAME" -tAc "SELECT to_regclass('public.prices')")
 
 if [ "$TABLE_EXISTS" == "public.prices" ]; then
     echo "Table 'prices' already exists. Skipping creation."
@@ -58,24 +58,6 @@ else
     GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO validator;
 EOF
 fi
-
-echo "Checking if application is already running..."
-APP_RUNNING=$(pgrep -f "./app")
-
-if [ -n "$APP_RUNNING" ]; then
-    echo "Application is already running (PID: $APP_RUNNING). Skipping startup."
-    exit 0
-fi
-
-echo "Installing Go dependencies..."
-if [ -f go.mod ]; then
-    go mod tidy
-else
-    go mod init project-sem-1
-fi
-
-echo "Building the application..."
-go build -o app .
 
 echo "PostgreSQL is now accessible externally and locally with proper permissions."
 echo "Preparation complete."
