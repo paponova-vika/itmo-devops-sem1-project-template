@@ -42,7 +42,7 @@ if [ "$TABLE_EXISTS" == "public.prices" ]; then
     echo "Table 'prices' already exists. Skipping creation."
 else
     echo "Creating table 'prices'..."
-    psql -U "$PGUSER" -h "$PGHOST" -p "$PGPORT" -d "$DBNAME" -d "$DBNAME" <<EOF
+    PGPASSWORD="$PGPASSWORD" psql -U "$PGUSER" -h "$PGHOST" -p "$PGPORT" -d "$DBNAME" <<EOF
     ALTER SCHEMA public OWNER TO validator;
     GRANT ALL ON SCHEMA public TO validator;
 
