@@ -22,7 +22,7 @@ else
 fi
 
 echo "Checking if database 'project-sem-1' exists..."
-DB_EXISTS=$(psql -U "$PGUSER" -h "$PGHOST" -p "$PGPORT" -d "$DBNAME" -tAc "SELECT 1 FROM pg_database WHERE datname='project-sem-1'")
+DB_EXISTS=$(PGPASSWORD="$PGPASSWORD" psql -U "$PGUSER" -h "$PGHOST" -p "$PGPORT" -d "$DBNAME" -tAc "SELECT 1 FROM pg_database WHERE datname='project-sem-1'")
 
 if [ "$DB_EXISTS" == "1" ]; then
     echo "Database 'project-sem-1' already exists. Skipping creation."
