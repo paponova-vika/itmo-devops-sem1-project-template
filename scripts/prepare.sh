@@ -16,13 +16,13 @@ else
 fi
 
 echo "Checking if database 'project-sem-1' exists..."
-DB_EXISTS=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='project-sem-1'")
+DB_EXISTS=$(sudo -u postgres psql -h localhost -p 5432 -tAc "SELECT 1 FROM pg_database WHERE datname='project-sem-1'")
 
 if [ "$DB_EXISTS" == "1" ]; then
     echo "Database 'project-sem-1' already exists. Skipping creation."
 else
     echo "Creating database 'project-sem-1'..."
-    sudo -u postgres psql <<EOF
+    sudo -u postgres psql -h localhost -p 5432 <<EOF
     CREATE DATABASE "project-sem-1";
     CREATE USER validator WITH PASSWORD 'val1dat0r';
     GRANT ALL PRIVILEGES ON DATABASE "project-sem-1" TO validator;
@@ -30,7 +30,7 @@ EOF
 fi
 
 echo "Checking if table 'prices' exists..."
-TABLE_EXISTS=$(sudo -u postgres psql -d "project-sem-1" -tAc "SELECT to_regclass('public.prices')")
+TABLE_EXISTS=$(sudo -u postgres psql -h localhost -p 5432 -d "project-sem-1" -tAc "SELECT to_regclass('public.prices')")
 
 if [ "$TABLE_EXISTS" == "public.prices" ]; then
     echo "Table 'prices' already exists. Skipping creation."
