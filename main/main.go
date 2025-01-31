@@ -102,6 +102,7 @@ func handlePostPrices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var csvFile io.ReadCloser
+	var foundCSV string
 
 	// Ищем CSV-файл внутри архива
 	for _, zipFile := range zipReader.File {
@@ -114,7 +115,7 @@ func handlePostPrices(w http.ResponseWriter, r *http.Request) {
 
 		log.Println("Found CSV file inside ZIP:", zipFile.Name)
 
-		csvFile, err := zipFile.Open()
+		csvFile, err = zipFile.Open()
 		if err != nil {
 			log.Println("Error: Failed to open CSV file:", err)
 			http.Error(w, "Failed to open CSV file", http.StatusInternalServerError)
@@ -122,17 +123,31 @@ func handlePostPrices(w http.ResponseWriter, r *http.Request) {
 		}
 
 		log.Println("Successfully extracted CSV file:", csvFile)
-		defer csvFile.Close()
+		foundCSV = zipFile.Name
+
 		break
 	}
 
 	if csvFile == nil {
+
 		log.Println("Error: No CSV file found in archive")
 		http.Error(w, "No CSV file found in archive", http.StatusBadRequest)
 		return
 	}
 
-	reader := csv.NewReader(csvFile)
+	log.Println("Extracted CSV file:", foundCSV)
+
+	var csvBuffer bytes.Buffer
+	_, err = io.Copy(&csvBuffer, csvFile)
+	if err != nil {
+		log.Println("❌ ERROR: Failed to copy CSV file to memory:", err)
+		http.Error(w, "Failed to process CSV file", http.StatusInternalServerError)
+		return
+	}
+
+	csvFile.Close()
+
+	reader := csv.NewReader(bytes.NewReader(csvBuffer.Bytes()))
 	reader.Comma = ','
 
 	rows, err := reader.ReadAll()
@@ -205,7 +220,7 @@ func handlePostPrices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stmt, err := tx.Prepare(`INSERT INTO prices (product_name, category, price, creation_date) VALUES ($2, $3, $4, $5)`)
+	stmt, err := tx.Prepare(`INSERT INTO prices (product_name, category, price, creation_date) VALUES ($1, $2, $3, $4)`)
 	if err != nil {
 		log.Println("Error: Failed to prepare statement:", err)
 		tx.Rollback()
@@ -216,7 +231,7 @@ func handlePostPrices(w http.ResponseWriter, r *http.Request) {
 
 	totalItems := 0
 	for _, p := range products {
-		_, err = stmt.Exec(p.ProductID, p.ProductName, p.Category, p.Price, p.CreationDate)
+		_, err = stmt.Exec(p.ProductName, p.Category, p.Price, p.CreationDate)
 		if err != nil {
 			log.Printf("Skipping row with Product ID %d due to database error: %v", p.ProductID, err)
 			continue
@@ -238,7 +253,7 @@ func handlePostPrices(w http.ResponseWriter, r *http.Request) {
 	// Запрашиваем статистику из БД
 	var totalCategories int
 	var totalPrice float64
-	err = db.QueryRow(`SELECT COUNT(DISTINCT category), SUM(price) FROM prices`).Scan(&totalCategories, &totalPrice)
+	err = db.QueryRow(`SELECT COUNT(DISTINCT category), COALESCE(SUM(price), 0) FROM prices`).Scan(&totalCategories, &totalPrice)
 	if err != nil {
 		log.Println("Error: Failed to calculate statistics:", err)
 		http.Error(w, "Failed to calculate statistics", http.StatusInternalServerError)
