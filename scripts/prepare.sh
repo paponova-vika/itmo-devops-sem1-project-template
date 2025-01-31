@@ -51,7 +51,7 @@ else
         product_name TEXT NOT NULL,
         category TEXT NOT NULL,
         price NUMERIC NOT NULL,
-        creation_date DATE NOT NULL
+        creation_date timestamp NOT NULL
     );
 
     GRANT ALL PRIVILEGES ON TABLE prices TO validator;

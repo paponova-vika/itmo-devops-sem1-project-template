@@ -2,13 +2,13 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	_ "github.com/lib/pq"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -35,6 +35,8 @@ func main() {
 		panic(err)
 	}
 
+	defer db.Close()
+
 	if err := initDatabase(); err != nil {
 		panic(fmt.Sprintf("Failed to initialize database: %v", err))
 	}
@@ -56,7 +58,7 @@ func initDatabase() error {
         product_name TEXT NOT NULL,
         category TEXT NOT NULL,
         price NUMERIC(10,2) NOT NULL,
-        creation_date DATE NOT NULL
+        creation_date timestamp NOT NULL
     )`)
 	return err
 }
@@ -83,44 +85,23 @@ func handlePostPrices(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Создаем временную директорию
-	tempDir, err := os.MkdirTemp("", "uploaded")
+	// Читаем содержимое ZIP в память
+	zipData, err := io.ReadAll(file)
 	if err != nil {
-		log.Println("Error: Failed to create temporary directory:", err)
-		http.Error(w, "Failed to create temp directory", http.StatusInternalServerError)
-		return
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Сохраняем загруженный архив
-	zipPath := filepath.Join(tempDir, "uploaded.zip")
-	outFile, err := os.Create(zipPath)
-	if err != nil {
-		log.Println("Error: Failed to create temp zip file:", err)
-		http.Error(w, "Failed to create temp file", http.StatusInternalServerError)
-		return
-	}
-	defer outFile.Close()
-
-	_, err = io.Copy(outFile, file)
-	if err != nil {
-		log.Println("Error: Failed to save zip file:", err)
-		http.Error(w, "Failed to save file", http.StatusInternalServerError)
+		log.Println("Error: Failed to read ZIP file into memory:", err)
+		http.Error(w, "Failed to read ZIP file", http.StatusInternalServerError)
 		return
 	}
 
-	log.Println("Successfully saved uploaded zip file:", zipPath)
-
-	// Открываем ZIP-архив
-	zipReader, err := zip.OpenReader(zipPath)
+	// Открываем ZIP-архив из памяти
+	zipReader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
-		log.Println("Error: Failed to open zip file:", err)
-		http.Error(w, "Failed to open zip file", http.StatusInternalServerError)
+		log.Println("Error: Failed to open ZIP file:", err)
+		http.Error(w, "Failed to open ZIP file", http.StatusInternalServerError)
 		return
 	}
-	defer zipReader.Close()
 
-	var csvFilePath string
+	var csvFile io.ReadCloser
 
 	// Ищем CSV-файл внутри архива
 	for _, zipFile := range zipReader.File {
@@ -133,50 +114,23 @@ func handlePostPrices(w http.ResponseWriter, r *http.Request) {
 
 		log.Println("Found CSV file inside ZIP:", zipFile.Name)
 
-		// Сохраняем CSV в временную папку
-		fileName := filepath.Base(zipFile.Name)
-		csvFilePath = filepath.Join(tempDir, fileName)
-		outFile, err := os.Create(csvFilePath)
+		csvFile, err := zipFile.Open()
 		if err != nil {
-			log.Println("Error: Failed to create CSV file:", err)
-			http.Error(w, "Failed to create CSV file", http.StatusInternalServerError)
-			return
-		}
-		defer outFile.Close()
-
-		zipFileReader, err := zipFile.Open()
-		if err != nil {
-			log.Println("Error: Failed to read CSV file from archive:", err)
-			http.Error(w, "Failed to read file from archive", http.StatusInternalServerError)
-			return
-		}
-		defer zipFileReader.Close()
-
-		_, err = io.Copy(outFile, zipFileReader)
-		if err != nil {
-			log.Println("Error: Failed to extract CSV file:", err)
-			http.Error(w, "Failed to extract CSV file", http.StatusInternalServerError)
+			log.Println("Error: Failed to open CSV file:", err)
+			http.Error(w, "Failed to open CSV file", http.StatusInternalServerError)
 			return
 		}
 
-		log.Println("Successfully extracted CSV file:", csvFilePath)
+		log.Println("Successfully extracted CSV file:", csvFile)
+		defer csvFile.Close()
 		break
 	}
 
-	if csvFilePath == "" {
+	if csvFile == nil {
 		log.Println("Error: No CSV file found in archive")
 		http.Error(w, "No CSV file found in archive", http.StatusBadRequest)
 		return
 	}
-
-	// Открываем CSV-файл
-	csvFile, err := os.Open(csvFilePath)
-	if err != nil {
-		log.Println("Error: Failed to open extracted CSV file:", err)
-		http.Error(w, "data.csv not found in archive", http.StatusBadRequest)
-		return
-	}
-	defer csvFile.Close()
 
 	reader := csv.NewReader(csvFile)
 	reader.Comma = ','
@@ -190,7 +144,15 @@ func handlePostPrices(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("CSV file contains %d rows (including header)", len(rows))
 
-	totalItems, totalCategories, totalPrice := 0, make(map[string]struct{}), 0.0
+	// Проверяем данные перед вставкой в БД
+	products := []struct {
+		ProductID    int
+		ProductName  string
+		Category     string
+		Price        float64
+		CreationDate string
+	}{}
+
 	for i, row := range rows {
 		// Пропускаем заголовок
 		if i == 0 {
@@ -207,32 +169,85 @@ func handlePostPrices(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Skipping row %d due to invalid product ID: %v", i, row[0])
 			continue
 		}
-		productName := row[1]
-		category := row[2]
+
 		price, err := strconv.ParseFloat(row[3], 64)
 		if err != nil {
 			log.Printf("Skipping row %d due to invalid price: %v", i, row[3])
 			continue
 		}
-		creationDate := row[4]
 
-		_, err = db.Exec(`INSERT INTO prices (id, product_name, category, price, creation_date) VALUES ($1, $2, $3, $4, $5)`,
-			productID, productName, category, price, creationDate)
+		products = append(products, struct {
+			ProductID    int
+			ProductName  string
+			Category     string
+			Price        float64
+			CreationDate string
+		}{
+			ProductID:    productID,
+			ProductName:  row[1],
+			Category:     row[2],
+			Price:        price,
+			CreationDate: row[4],
+		})
+	}
+
+	if len(products) == 0 {
+		log.Println("Error: No valid data found in CSV")
+		http.Error(w, "No valid data in CSV", http.StatusBadRequest)
+		return
+	}
+
+	// Начинаем транзакцию для массовой вставки
+	tx, err := db.Begin()
+	if err != nil {
+		log.Println("Error: Failed to start transaction:", err)
+		http.Error(w, "Database transaction error", http.StatusInternalServerError)
+		return
+	}
+
+	stmt, err := tx.Prepare(`INSERT INTO prices (product_name, category, price, creation_date) VALUES ($2, $3, $4, $5)`)
+	if err != nil {
+		log.Println("Error: Failed to prepare statement:", err)
+		tx.Rollback()
+		http.Error(w, "Database preparation error", http.StatusInternalServerError)
+		return
+	}
+	defer stmt.Close()
+
+	totalItems := 0
+	for _, p := range products {
+		_, err = stmt.Exec(p.ProductID, p.ProductName, p.Category, p.Price, p.CreationDate)
 		if err != nil {
-			log.Printf("Skipping row %d due to database error: %v", i, err)
+			log.Printf("Skipping row with Product ID %d due to database error: %v", p.ProductID, err)
 			continue
 		}
-
 		totalItems++
-		totalCategories[category] = struct{}{}
-		totalPrice += price
+		//totalCategories[p.Category] = struct{}{}
+		//totalPrice += p.Price
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		log.Println("Error: Failed to commit transaction:", err)
+		http.Error(w, "Database commit error", http.StatusInternalServerError)
+		return
 	}
 
 	log.Printf("Successfully inserted %d items into database", totalItems)
 
+	// Запрашиваем статистику из БД
+	var totalCategories int
+	var totalPrice float64
+	err = db.QueryRow(`SELECT COUNT(DISTINCT category), SUM(price) FROM prices`).Scan(&totalCategories, &totalPrice)
+	if err != nil {
+		log.Println("Error: Failed to calculate statistics:", err)
+		http.Error(w, "Failed to calculate statistics", http.StatusInternalServerError)
+		return
+	}
+
 	response := map[string]interface{}{
 		"total_items":      totalItems,
-		"total_categories": len(totalCategories),
+		"total_categories": totalCategories,
 		"total_price":      totalPrice,
 	}
 
@@ -242,6 +257,7 @@ func handlePostPrices(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleGetPrices(w http.ResponseWriter, r *http.Request) {
+	// Запрашиваем все данные из БД
 	rows, err := db.Query(`SELECT id, product_name, category, price, creation_date FROM prices`)
 	if err != nil {
 		http.Error(w, "Failed to query database", http.StatusInternalServerError)
@@ -249,103 +265,111 @@ func handleGetPrices(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	tempDir, err := ioutil.TempDir("", "output")
-	if err != nil {
-		http.Error(w, "Failed to create temp directory", http.StatusInternalServerError)
+	// Сохраняем данные в память
+	type Product struct {
+		ID           int
+		Name         string
+		Category     string
+		Price        float64
+		CreationDate string
+	}
+	var products []Product
+
+	for rows.Next() {
+		var p Product
+		err := rows.Scan(&p.ID, &p.Name, &p.Category, &p.Price, &p.CreationDate)
+		if err != nil {
+			log.Println("Error: Failed to scan row:", err)
+			http.Error(w, "Failed to scan row", http.StatusInternalServerError)
+			return
+		}
+		products = append(products, p)
+	}
+
+	if err = rows.Err(); err != nil {
+		log.Println("Error: Error occurred while iterating over rows:", err)
+		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
-	defer os.RemoveAll(tempDir)
 
-	csvPath := filepath.Join(tempDir, "data.csv")
-	csvFile, err := os.Create(csvPath)
-	if err != nil {
-		http.Error(w, "Failed to create CSV file", http.StatusInternalServerError)
-		return
-	}
-	defer csvFile.Close()
+	log.Printf("Loaded %d products from database", len(products))
 
-	writer := csv.NewWriter(csvFile)
+	// Создаем CSV в памяти
+	var csvBuffer bytes.Buffer
+	writer := csv.NewWriter(&csvBuffer)
 
 	// Записываем заголовок
 	err = writer.Write([]string{"id", "name", "category", "price", "create_date"})
 	if err != nil {
-		http.Error(w, "Failed write CSV header", http.StatusInternalServerError)
+		log.Println("Error: Failed to write CSV header:", err)
+		http.Error(w, "Failed to write CSV header", http.StatusInternalServerError)
 		return
 	}
 
-	// Записываем заголовок
-	for rows.Next() {
-		var productID int
-		var creationDate, productName, category string
-		var price float64
-		err = rows.Scan(&productID, &productName, &category, &price, &creationDate)
-		if err != nil {
-			http.Error(w, "Failed to scan row", http.StatusInternalServerError)
-			return
-		}
+	// Записываем строки
+	for _, p := range products {
 		err = writer.Write([]string{
-			strconv.Itoa(productID), productName, category, fmt.Sprintf("%.2f", price), creationDate,
+			strconv.Itoa(p.ID),
+			p.Name,
+			p.Category,
+			fmt.Sprintf("%.2f", p.Price),
+			p.CreationDate,
 		})
 		if err != nil {
-			http.Error(w, "Failed to write to CSV file", http.StatusInternalServerError)
+			log.Println("Error: Failed to write CSV row:", err)
+			http.Error(w, "Failed to write CSV row", http.StatusInternalServerError)
 			return
 		}
 	}
-
 	writer.Flush()
 
 	if err := writer.Error(); err != nil {
-		http.Error(w, "Error during CSV write", http.StatusInternalServerError)
+		log.Println("Error: CSV writing error:", err)
+		http.Error(w, "CSV writing error", http.StatusInternalServerError)
 		return
 	}
 
-	zipPath := filepath.Join(tempDir, "data.zip")
-	zipFile, err := os.Create(zipPath)
-	if err != nil {
-		http.Error(w, "Failed to create ZIP file", http.StatusInternalServerError)
-		return
-	}
-	defer zipFile.Close()
+	log.Println("CSV file created in memory")
 
-	archive := zip.NewWriter(zipFile)
-	csvInArchive, err := archive.Create("data.csv")
-	if err != nil {
-		http.Error(w, "Failed to add CSV to ZIP", http.StatusInternalServerError)
-		return
-	}
+	// Создаем ZIP-архив в памяти
+	var zipBuffer bytes.Buffer
+	zipWriter := zip.NewWriter(&zipBuffer)
 
-	_, err = csvFile.Seek(0, io.SeekStart)
+	csvFile, err := zipWriter.Create("data.csv")
 	if err != nil {
-		http.Error(w, "Failed to seek CSV file", http.StatusInternalServerError)
+		log.Println("Error: Failed to create CSV inside ZIP:", err)
+		http.Error(w, "Failed to create CSV inside ZIP", http.StatusInternalServerError)
 		return
 	}
 
-	_, err = io.Copy(csvInArchive, csvFile)
+	_, err = csvFile.Write(csvBuffer.Bytes())
 	if err != nil {
-		http.Error(w, "Failed to copy CSV to ZIP", http.StatusInternalServerError)
+		log.Println("Error: Failed to write CSV to ZIP:", err)
+		http.Error(w, "Failed to write CSV to ZIP", http.StatusInternalServerError)
 		return
 	}
 
-	err = archive.Close()
-
+	err = zipWriter.Close()
 	if err != nil {
+		log.Println("Error: Failed to close ZIP archive:", err)
 		http.Error(w, "Failed to close ZIP archive", http.StatusInternalServerError)
 		return
 	}
 
-	_, err = zipFile.Seek(0, io.SeekStart)
-	if err != nil {
-		http.Error(w, "Failed to seek ZIP file", http.StatusInternalServerError)
-		return
-	}
+	log.Println("ZIP archive created in memory")
+
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", "attachment; filename=data.zip")
+	w.Header().Set("Content-Length", strconv.Itoa(zipBuffer.Len()))
+	_, err = w.Write(zipBuffer.Bytes())
 
-	_, err = io.Copy(w, zipFile)
 	if err != nil {
+		log.Println("Error: Failed to send ZIP file:", err)
 		http.Error(w, "Failed to send ZIP file", http.StatusInternalServerError)
 		return
 	}
+
+	log.Println("ZIP file sent successfully")
 }
 
 func unzip(src, dest string) error {
